@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Babylon MiniCraft (TS)</title>
+  <style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #87ceeb; }
+    #renderCanvas { width: 100%; height: 100%; display: block; outline: none; touch-action: none; }
+
+    #crosshair {
+      position: fixed; left: 50%; top: 50%; width: 20px; height: 20px;
+      transform: translate(-50%, -50%); pointer-events: none; z-index: 5;
+    }
+    #crosshair::before, #crosshair::after {
+      content: ""; position: absolute; background: rgba(255,255,255,.9);
+      box-shadow: 0 0 2px rgba(0,0,0,.7);
+    }
+    #crosshair::before { left: 9px; top: 0; width: 2px; height: 20px; }
+    #crosshair::after { left: 0; top: 9px; width: 20px; height: 2px; }
+
+    #hotbar {
+      position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+      display: flex; gap: 6px; z-index: 5;
+    }
+    .slot {
+      width: 48px; height: 48px; border: 2px solid rgba(255,255,255,.2); border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      font: bold 10px/1.3 sans-serif; color: #fff; text-align: center; white-space: pre;
+      text-shadow: 1px 1px 2px #000; background: rgba(0,0,0,.35); cursor: pointer;
+    }
+    .slot.active { border-color: #ffdd55; box-shadow: 0 0 10px #ffdd55; }
+
+    #mineBar {
+      position: fixed; left: 50%; bottom: 76px; transform: translateX(-50%);
+      width: 160px; height: 8px; background: rgba(0,0,0,.5); border-radius: 4px;
+      display: none; z-index: 5;
+    }
+    #mineFill { height: 100%; width: 0; background: #7ec850; border-radius: 4px; }
+
+    #hearts, #hunger {
+      position: fixed; left: 16px; z-index: 5; font-size: 18px; letter-spacing: 1px;
+      text-shadow: 1px 1px 2px #000;
+    }
+    #hearts { bottom: 16px; }
+    #hunger { bottom: 40px; }
+
+    #stats { position: fixed; right: 16px; bottom: 16px; z-index: 5; color: #fff; text-align: right;
+      font: bold 13px sans-serif; text-shadow: 1px 1px 2px #000; background: rgba(0,0,0,.35);
+      padding: 8px 12px; border-radius: 8px; max-width: 44vw; }
+
+    #tip {
+      position: fixed; top: 12px; left: 12px; z-index: 5; color: #fff;
+      background: rgba(0,0,0,.45); padding: 10px 14px; border-radius: 8px;
+      font: 12px/1.7 sans-serif; text-shadow: 1px 1px 2px #000; pointer-events: none;
+    }
+    #fps {
+      position: fixed; top: 12px; right: 12px; z-index: 5; color: #0f0;
+      font: bold 14px monospace; background: rgba(0,0,0,.4);
+      padding: 4px 8px; border-radius: 6px;
+    }
+    #netStatus { position: fixed; top: 44px; right: 12px; z-index: 5; color: #f88;
+      font: 12px monospace; background: rgba(0,0,0,.4); padding: 4px 8px; border-radius: 6px; }
+    #playerCount { position: fixed; top: 70px; right: 12px; z-index: 5; color: #9df;
+      font: 12px monospace; background: rgba(0,0,0,.4); padding: 4px 8px; border-radius: 6px; }
+
+    #msgs {
+      position: fixed; left: 16px; bottom: 76px; z-index: 5; color: #fff;
+      font: 13px/1.5 sans-serif; text-shadow: 1px 1px 2px #000; pointer-events: none;
+    }
+    #chatLog {
+      position: fixed; left: 16px; top: 120px; z-index: 5; color: #fff;
+      font: 13px/1.5 sans-serif; text-shadow: 1px 1px 2px #000; pointer-events: none;
+      max-width: 42vw;
+    }
+    #chatWrap {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; display: none;
+      background: rgba(10,12,18,.92); padding: 10px;
+    }
+    #chatInput {
+      width: 100%; box-sizing: border-box; background: #1a2028; color: #fff;
+      border: 1px solid #4a5a6a; border-radius: 6px; padding: 8px 12px;
+      font: 14px monospace; outline: none;
+    }
+
+    #overlay {
+      position: fixed; inset: 0; z-index: 9; display: flex;
+      align-items: center; justify-content: center; background: rgba(0,0,0,.35);
+      color: #fff; font: bold 26px sans-serif; text-shadow: 0 2px 8px #000;
+      cursor: pointer; user-select: none;
+    }
+
+    #panel, #invPanel {
+      position: fixed; top: 50%; z-index: 20;
+      width: 340px; max-height: 88vh; overflow-y: auto; display: none;
+      background: rgba(20,24,32,.95); color: #eee; border-radius: 12px;
+      padding: 14px 16px; font: 13px/1.6 sans-serif; border: 1px solid #3a4a5a;
+    }
+    #panel { right: 20px; transform: translateY(-50%); }
+    #invPanel { left: 50%; transform: translate(-50%, -50%); width: 560px; }
+    #panel h2, #invPanel h3 { margin: 6px 0; font-size: 16px; color: #ffd54a; }
+    #panel h2 { font-size: 17px; margin-top: 0; }
+    .psec { border-top: 1px solid #2a3646; padding: 8px 0; }
+    .pbtn {
+      background: #2a3a4a; color: #fff; border: 1px solid #4a5a6a; border-radius: 6px;
+      padding: 4px 10px; margin: 2px; cursor: pointer; font-size: 12px;
+    }
+    .pbtn:hover:not(:disabled) { background: #3a5a7a; }
+    .pbtn:disabled { opacity: .4; cursor: default; }
+
+    #invGrid { display: grid; grid-template-columns: repeat(9, 1fr); gap: 4px; margin-bottom: 10px; }
+    .invSlot {
+      height: 44px; border: 1px solid #4a5a6a; border-radius: 6px; background: #141a22;
+      color: #ddd; font: 10px/1.25 sans-serif; padding: 3px; cursor: pointer;
+      overflow: hidden; word-break: break-all;
+    }
+    .invSlot.hot { background: #1e2a36; }
+    .invSlot.active { border-color: #ffdd55; box-shadow: 0 0 6px #ffdd55 inset; }
+    #craftList { display: flex; flex-direction: column; gap: 3px; max-height: 260px; overflow-y: auto; }
+    .craftRow { display: flex; align-items: center; gap: 6px; }
+    .craftInfo { color: #8fa8bb; font-size: 11px; }
+
+    #consoleWrap {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: none;
+      background: rgba(10,12,18,.9); padding: 10px;
+    }
+    #consoleInput {
+      width: 100%; box-sizing: border-box; background: #1a2028; color: #fff;
+      border: 1px solid #4a5a6a; border-radius: 6px; padding: 8px 12px;
+      font: 14px monospace; outline: none;
+    }
+
+    #connectWrap {
+      position: fixed; inset: 0; z-index: 30; display: none;
+      align-items: center; justify-content: center; background: rgba(0,0,0,.55);
+    }
+    #connectBox {
+      background: rgba(20,24,32,.98); border: 1px solid #3a4a5a; border-radius: 12px;
+      padding: 20px 24px; width: 420px; color: #eee; font: 13px/1.7 sans-serif;
+    }
+    #connectBox h2 { margin: 0 0 8px; color: #ffd54a; font-size: 18px; }
+    #connectBox input {
+      width: 100%; box-sizing: border-box; margin: 3px 0 10px; padding: 8px 10px;
+      background: #1a2028; color: #fff; border: 1px solid #4a5a6a; border-radius: 6px;
+      font: 13px monospace; outline: none;
+    }
+    .hint { color: #8fa8bb; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <canvas id="renderCanvas"></canvas>
+  <div id="crosshair"></div>
+  <div id="hotbar"></div>
+  <div id="mineBar"><div id="mineFill"></div></div>
+  <div id="hearts"></div>
+  <div id="hunger"></div>
+  <div id="stats"><div id="coins"></div><div id="tools"></div></div>
+  <div id="tip">
+    <b>WASD</b> 移动 · <b>空格</b> 跳(1格) · <b>Shift</b> 疾跑 · <b>F</b> 飞行<br>
+    <b>左键</b> 挖掘/攻击 · <b>右键</b> 放置/吃东西/拉杆 · <b>1-9/滚轮</b> 选择<br>
+    <b>E</b> 背包+合成 · <b>P</b> 管理面板 · <b>T</b> 命令 · <b>Y</b> 聊天 · <b>F3</b> 碰撞箱
+  </div>
+  <div id="fps">FPS: --</div>
+  <div id="netStatus">未连接</div>
+  <div id="playerCount">0 人在线</div>
+  <div id="msgs"></div>
+  <div id="chatLog"></div>
+
+  <div id="invPanel">
+    <h3>🎒 背包（点击下方槽位切换；点击仓库格与快捷栏交换）<span style="float:right;cursor:pointer" id="invClose">✕</span></h3>
+    <div id="invGrid"></div>
+    <div id="invHint" class="hint"></div>
+    <h3>🔨 合成（材料足够时高亮）</h3>
+    <div id="craftList"></div>
+  </div>
+
+  <div id="panel"></div>
+
+  <div id="consoleWrap"><input id="consoleInput" placeholder="输入命令，/help 查看帮助，Enter 发送，Esc 关闭"></div>
+  <div id="chatWrap"><input id="chatInput" placeholder="输入聊天内容，Enter 发送，Esc 关闭"></div>
+
+  <div id="connectWrap">
+    <div id="connectBox">
+      <h2>局域网联机（无需注册）</h2>
+      <div class="hint">房主在项目目录运行 <b>npm run server</b>，其他人填入房主 IP 后连接。</div>
+      <label>昵称</label>
+      <input id="nameInput" maxlength="16" placeholder="输入昵称">
+      <label>服务器地址</label>
+      <input id="serverInput" placeholder="ws://192.168.1.10:8787">
+      <div style="display:flex;gap:8px;margin-top:6px">
+        <button class="pbtn" id="connectBtn">连接</button>
+        <button class="pbtn" id="disconnectBtn">断开</button>
+        <button class="pbtn" onclick="document.getElementById('connectWrap').style.display='none'">关闭</button>
+      </div>
+      <div id="connectStatus" class="hint" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <div id="overlay">点击屏幕开始游戏</div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
