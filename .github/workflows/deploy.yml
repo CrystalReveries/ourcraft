@@ -5,11 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# 必须的权限：读源码、写 Pages、用 OIDC 令牌部署
+# 需要写权限把 dist 推到 gh-pages 分支
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 # 同一时间只跑一个部署，避免并发覆盖
 concurrency:
@@ -17,27 +15,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
-      - run: npm ci
-      - run: npm run build          # tsc && vite build → dist/
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: dist
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+      - run: npm ci
+
+      - name: Build (tsc && vite build -> dist/)
+        run: npm run build
+
+      # 打印产物入口：日志应显示 ./assets/index-*.js，而不是 /src/main.ts
+      - name: Verify built entry
+        run: grep -o '<script[^>]*src="[^"]*"' dist/index.html
+
+      # 把 dist/ 发布到 gh-pages 分支根目录；Pages 选择该分支即可
+      - uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          force_orphan: true
