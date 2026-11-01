@@ -38,10 +38,10 @@ Babylon 场景（实例化网格、图集纹理）
         → 交互: DDA raycastBlock → 命中方块/上一格
         → 变更: placeBlock / breakBlock
                   ├─ 更新 Uint8Array 体素
-                  ├─ updateInstancesAt(3x3x3 邻域实例增删)
+                  ├─ updateInstancesAt → rebuildChunksAt(重建所在区块 + 边界邻居)
                   ├─ updateRedstoneRegistry + (邻域有元件才) recomputeRedstone
                   └─ 返回 BlockDef(硬度/金币)
-        → 渲染: InstancedMesh(冻结世界矩阵)
+        → 渲染: 区块合并网格(每 16×16×SY 一张，冻结世界矩阵)
 ```
 
 主循环（`scene.onBeforeRenderObservable`）：
@@ -55,30 +55,45 @@ Babylon 场景（实例化网格、图集纹理）
 ## 关键数据结构
 | 结构 | 说明 |
 |---|---|
-| `world: Uint8Array(64*48*64)` | 体素 ID；索引 `x + z*SX + y*SX*SZ` |
-| `instances: Map<"x,y,z", InstancedMesh>` | 每个可见方块一个实例 |
-| `masters: Map<blockId, Mesh>` | 每种方块的主网格（隐藏） |
+| `world: Uint8Array(SX*SY*SZ)` | 体素 ID（192×64×192）；索引 `x + z*SX + y*SX*SZ` |
+| `chunkMeshes: Map<index, {opaque, glass, plant}>` | 区块合并网格（16×16×SY/区块），普通方块/玻璃/植物各一张 |
+| `instances: Map<"x,y,z", InstancedMesh>` | 仅红石元件与萤石等特殊方块 |
+| `masters: Map<blockId, Mesh>` | 实例方块的隐藏主网格 |
 | `redstoneCells: Map<key, special>` | 红石元件注册表（增量维护，避免全图扫描） |
 | `dustOn / lampLit / leverOn: Set<key>` | 红石状态位 |
 | `mobs: Mob[]` | 生物列表（根节点 + 实例 + 碰撞箱 + 路径） |
 
 ## 渲染策略
-- **只渲染可见方块**：邻接面全被不透明方块遮挡则不创建实例（`faceVisible`）
-- **实例化 + 冻结矩阵**：静态方块 `freezeWorldMatrix()`，避免每帧重算
-- **程序化图集**：512×256（8×4 格，64px/格），`DynamicTexture`，无外部资源
+- **区块合并网格（核心）**：16×16×SY 一个区块，把区块内所有方块面累积成静态网格；
+  普通方块/玻璃/十字植物各一张，共享 3 个材质。方块变化只重建所在区块（+ 边界邻居）
+- **逐面剔除**：`opaqueAt(x,y,z)` 判断邻居是否遮挡；世界底面外视为不透明，
+  因此 y=0 基岩层不产生几何。只写暴露的面
+- **实例只给"非常规"方块**：红石元件（会换外观）、萤石（自发光材质）、生物、玩家
+- **冻结矩阵**：所有静态网格 `freezeWorldMatrix()`，避免每帧重算；
+  区块网格另加 `doNotSyncBoundingInfo`，几何更新后手动 `refreshBoundingInfo()`
+- **程序化图集**：512×256（8×4 格，64px/格），`DynamicTexture`，无外部资源；
+  单张图集 + 单一材质，`anisotropicFilteringLevel = 1`，`material.freeze()`
 - **透明分离**：图集 `hasAlpha=false`；玻璃用独立 64×64 透明纹理 + `backFaceCulling=false`
-- **雾效**：线性雾 40→110，颜色随昼夜/天气变化
-- **渲染分辨率**：连续 3 次采样 FPS<24 时按 25% 步进降档（`setHardwareScalingLevel`）
+- **植物图集**：独立 256×256（4×4 格）带 alpha 图集，4 种高草 + 10 种花共享同一 `StandardMaterial`；
+  变体按坐标哈希选 tile，合并进区块的 `plant` 通道（同一位置外观稳定）
+- **水面**：单张网格（只铺上方暴露于空气的水面顶面）+ `ShaderMaterial`（顶点波动 / 菲涅尔 / 波光），
+  半透明混合；`DEFS[B.WATER].opaque=false` 让水下方块面照常生成
+- **朝下面补光**：`hemi.groundColor` 设为浅灰蓝，避免树冠底/屋檐/洞顶纯黑
+- **雾效**：线性雾 70→190，颜色随昼夜/天气变化
+- **渲染分辨率**：以 60fps 为目标，连续 2 次采样 <55fps 时按 15% 降档（最低 60%），>70fps 时逐步升回 100%
 
-## 性能预算（单人 64×48×64 世界）
-| 操作 | 优化前 | 优化后 |
+## 性能预算（单人 192×64×192 世界）
+| 指标 | 优化前 | 优化后（实测） |
 |---|---|---|
-| 每次挖/放方块 | 全图 19.7 万格扫描 | 注册表遍历（通常 <100 项），且无红石邻域时直接跳过 |
-| 每帧方块矩阵 | ~7000 次矩阵合成 | 0（冻结） |
+| 场景 Mesh 总数 | 99,910（每方块一个实例） | ~380 |
+| `_evaluateActiveMeshes` | 78.6 ms/帧 | 2.7 ms/帧 |
+| land-day 帧率 | 11.6 fps | 186 fps |
+| 每次挖/放方块 | 全图扫描 + 实例增删 | 重建单区块 ≈2.6~4 ms |
 | 鼠标移动 | 场景拾取射线 | 无（`skipPointerMovePicking`） |
 | 主循环分配 | 每帧多个 Vector/Color 对象 | 0（复用临时对象） |
 
 详见 [../PERFORMANCE.md](../PERFORMANCE.md)。
+复测：`npm run fps -- --diag`（本机 Chrome + Playwright，固定分辨率）。
 
 ## 扩展点
 - **新方块**：`config.ts` 加 ID/DEFS/图集 tile → `world.ts` 注册主网格（若为特殊元件再写 master）→ 需要时加进 `HOTBAR`

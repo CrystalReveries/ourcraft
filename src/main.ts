@@ -1,7 +1,7 @@
 /* 主模块：玩家、输入、背包/合成/饥饿、挖掘与战斗、HUD、面板、命令、LAN 联机 */
 import * as BABYLON from "@babylonjs/core";
 import {
-  SX, SZ, REACH, ATTACK_REACH, GRAVITY, JUMP_V, B, DEFS,
+  SX, SZ, REACH, ATTACK_REACH, GRAVITY, JUMP_V, B, DEFS, SEA_LEVEL,
 } from "./config";
 import {
   Inventory, RECIPES, craft, canCraft, ITEMS, itemName, itemColor, blockItem,
@@ -10,6 +10,7 @@ import {
 import {
   initWorld, generateWorld, buildAllInstances, getBlock, boxCollides,
   breakBlock, placeBlock, raycastBlock, toggleLeverAt, setBlockRemote, surfaceY, leverOn,
+  villageSites, setWaterMode, getWaterMode, WaterMode,
 } from "./world";
 import {
   initMobs, spawnMob, updateMobs, pickMobRay, damageMob, removeMobsOfType,
@@ -20,13 +21,21 @@ import { NetClient } from "./net";
 
 // ---------- 引擎 ----------
 const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
-const engine = new BABYLON.Engine(canvas, true, { stencil: false });
+const engine = new BABYLON.Engine(canvas, true, {
+  stencil: false,
+  antialias: true,
+  preserveDrawingBuffer: false,
+  powerPreference: "high-performance",
+  doNotHandleContextLost: true,
+});
 const scene = new BABYLON.Scene(engine);
 scene.skipPointerMovePicking = true;
 scene.blockMaterialDirtyMechanism = true;
 
 const hemi = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0.2, 1, 0.1), scene);
 hemi.intensity = 0.85;
+// 给朝下的面（树冠底、屋檐、洞穴顶）一点环境光，否则纯黑
+hemi.groundColor = new BABYLON.Color3(0.42, 0.45, 0.5);
 const sun = new BABYLON.DirectionalLight("sun", new BABYLON.Vector3(-0.5, -1, 0.4), scene);
 sun.intensity = 0.65;
 scene.fogMode = BABYLON.Scene.FOGMODE_LINEAR;
@@ -45,6 +54,35 @@ generateWorld();
 buildAllInstances();
 const env = new Environment(scene, sun, hemi);
 initMobs(scene);
+
+// ---------- 玩家模型（第三人称可见） ----------
+function buildPlayerAvatar(): BABYLON.TransformNode {
+  const root = new BABYLON.TransformNode("playerAvatar", scene);
+  const skin = new BABYLON.StandardMaterial("avatarSkin", scene);
+  skin.diffuseColor = BABYLON.Color3.FromHexString("#e0b48a");
+  skin.specularColor = BABYLON.Color3.Black();
+  const shirt = new BABYLON.StandardMaterial("avatarShirt", scene);
+  shirt.diffuseColor = BABYLON.Color3.FromHexString("#3f6fb0");
+  shirt.specularColor = BABYLON.Color3.Black();
+  const pants = new BABYLON.StandardMaterial("avatarPants", scene);
+  pants.diffuseColor = BABYLON.Color3.FromHexString("#33465f");
+  pants.specularColor = BABYLON.Color3.Black();
+  const part = (mat: BABYLON.Material, w: number, h: number, d: number, x: number, y: number, z: number): void => {
+    const m = BABYLON.MeshBuilder.CreateBox("av", { width: w, height: h, depth: d }, scene);
+    m.material = mat;
+    m.position.set(x, y, z);
+    m.parent = root;
+  };
+  part(shirt, 0.5, 0.72, 0.3, 0, 1.14, 0);      // 躯干
+  part(skin, 0.46, 0.46, 0.46, 0, 1.72, 0);     // 头
+  part(shirt, 0.14, 0.56, 0.18, -0.32, 1.2, 0); // 左臂
+  part(shirt, 0.14, 0.56, 0.18, 0.32, 1.2, 0);  // 右臂
+  part(pants, 0.18, 0.72, 0.18, -0.13, 0.42, 0);// 左腿
+  part(pants, 0.18, 0.72, 0.18, 0.13, 0.42, 0); // 右腿
+  root.setEnabled(false);
+  return root;
+}
+const playerAvatar = buildPlayerAvatar();
 
 // ---------- 背包 ----------
 const inv = new Inventory();
@@ -72,8 +110,20 @@ const player: Player = {
 
 let spawnPoint = new BABYLON.Vector3();
 function respawn(): void {
-  const x = SX >> 1, z = SZ >> 1;
-  spawnPoint = new BABYLON.Vector3(x + 0.5, surfaceY(x, z) + 0.05, z + 0.5);
+  const cx = SX >> 1, cz = SZ >> 1;
+  let sx = cx, sz = cz, sy = surfaceY(cx, cz);
+  // 从中心螺旋向外找一块"高于海平面且脚下不是水"的陆地出生
+  search: for (let r = 0; r < 48; r++) {
+    for (let dx = -r; dx <= r; dx++)
+      for (let dz = -r; dz <= r; dz++) {
+        if (Math.abs(dx) !== r && Math.abs(dz) !== r) continue;
+        const x = cx + dx, z = cz + dz;
+        if (x < 3 || z < 3 || x >= SX - 3 || z >= SZ - 3) continue;
+        const y = surfaceY(x, z);
+        if (y > SEA_LEVEL && getBlock(x, y, z) !== B.WATER) { sx = x; sz = z; sy = y; break search; }
+      }
+  }
+  spawnPoint = new BABYLON.Vector3(sx + 0.5, sy + 0.05, sz + 0.5);
 }
 function placePlayerAtSpawn(): void {
   player.pos.copyFrom(spawnPoint);
@@ -109,6 +159,9 @@ const nameInput = document.getElementById("nameInput") as HTMLInputElement;
 const serverInput = document.getElementById("serverInput") as HTMLInputElement;
 const netStatusEl = document.getElementById("netStatus") as HTMLDivElement;
 const playerCountEl = document.getElementById("playerCount") as HTMLDivElement;
+const tutorialEl = document.getElementById("tutorial") as HTMLDivElement;
+const tutDontShow = document.getElementById("tutDontShow") as HTMLInputElement;
+const tutCloseBtn = document.getElementById("tutClose") as HTMLButtonElement;
 
 let dead = false;
 let locked = false;
@@ -117,7 +170,9 @@ let consoleOpen = false;
 let invOpen = false;
 let chatOpen = false;
 let connectOpen = false;
-const uiOpen = (): boolean => panelOpen || consoleOpen || invOpen || chatOpen || connectOpen;
+let tutorialOpen = false;
+let thirdPerson = false;
+const uiOpen = (): boolean => panelOpen || consoleOpen || invOpen || chatOpen || connectOpen || tutorialOpen;
 
 function msg(text: string): void {
   const d = document.createElement("div");
@@ -155,17 +210,104 @@ function refreshHUD(): void {
     `${toolLabel(inv, "pick")} · ${toolLabel(inv, "axe")} · ${toolLabel(inv, "shovel")} · 剑伤害 ${bestSwordDamage(inv)}`;
   renderHotbar();
 }
+// ---------- 物品图标（程序化纹理，带明暗/噪点） ----------
+const _iconCache = new Map<string, string>();
+function shadeHex(hex: string, f: number): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const r = Math.min(255, Math.round(((n >> 16) & 255) * f));
+  const g = Math.min(255, Math.round(((n >> 8) & 255) * f));
+  const b = Math.min(255, Math.round((n & 255) * f));
+  return `#${((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1)}`;
+}
+function poly(x: CanvasRenderingContext2D, pts: number[][]): void {
+  x.beginPath();
+  x.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) x.lineTo(pts[i][0], pts[i][1]);
+  x.closePath();
+  x.fill();
+}
+function tierHex(tier: string): string {
+  switch (tier) {
+    case "wood": return "#a3814f";
+    case "stone": return "#8a8a8a";
+    case "iron": return "#d8d8d8";
+    case "gold": return "#f0cf4a";
+    case "diamond": return "#4ee0e0";
+    default: return "#cccccc";
+  }
+}
+function itemIcon(id: string): string {
+  const cached = _iconCache.get(id);
+  if (cached) return cached;
+  const d = ITEMS[id];
+  const cv = document.createElement("canvas");
+  cv.width = 48; cv.height = 48;
+  const x = cv.getContext("2d")!;
+  x.clearRect(0, 0, 48, 48);
+  if (d && d.kind === "block" && d.blockId !== undefined) {
+    const col = DEFS[d.blockId].color;
+    x.fillStyle = shadeHex(col, 1.22); poly(x, [[24, 9], [40, 17], [24, 25], [8, 17]]);
+    x.fillStyle = col;                  poly(x, [[8, 17], [24, 25], [24, 41], [8, 33]]);
+    x.fillStyle = shadeHex(col, 0.7);   poly(x, [[40, 17], [24, 25], [24, 41], [40, 33]]);
+    x.strokeStyle = "rgba(0,0,0,0.22)"; x.lineWidth = 1;
+    x.beginPath(); x.moveTo(24, 9); x.lineTo(24, 41); x.moveTo(8, 17); x.lineTo(40, 17); x.stroke();
+    for (let i = 0; i < 26; i++) {
+      x.fillStyle = `rgba(0,0,0,${0.04 + Math.random() * 0.08})`;
+      x.fillRect(9 + Math.random() * 30, 18 + Math.random() * 22, 2, 2);
+    }
+  } else if (d && d.kind === "tool") {
+    const tier = d.tool ? tierHex(d.tool.tier) : "#a3814f";
+    x.strokeStyle = "#8a6a3c"; x.lineWidth = 5; x.lineCap = "round";
+    x.beginPath(); x.moveTo(14, 40); x.lineTo(30, 16); x.stroke();
+    x.fillStyle = tier;
+    if (d.tool?.type === "sword") poly(x, [[26, 6], [34, 14], [22, 26], [18, 22]]);
+    else if (d.tool?.type === "pick") poly(x, [[12, 18], [18, 10], [34, 14], [30, 18], [20, 16]]);
+    else if (d.tool?.type === "axe") poly(x, [[22, 8], [34, 12], [34, 22], [24, 18]]);
+    else poly(x, [[24, 8], [34, 16], [30, 24], [22, 22]]);
+  } else if (d && d.kind === "food") {
+    x.fillStyle = d.color;
+    x.beginPath(); x.ellipse(24, 27, 15, 12, 0, 0, Math.PI * 2); x.fill();
+    x.fillStyle = shadeHex(d.color, 0.72);
+    x.beginPath(); x.ellipse(24, 31, 9, 5, 0, 0, Math.PI * 2); x.fill();
+    x.fillStyle = "rgba(255,255,255,0.35)";
+    x.beginPath(); x.ellipse(19, 22, 4, 3, -0.4, 0, Math.PI * 2); x.fill();
+  } else {
+    const col = d?.color ?? "#999999";
+    if (id.includes("diamond") || id.includes("emerald")) {
+      x.fillStyle = col; poly(x, [[24, 8], [38, 20], [24, 40], [10, 20]]);
+      x.fillStyle = "rgba(255,255,255,0.5)"; poly(x, [[24, 12], [30, 20], [24, 24], [18, 20]]);
+    } else {
+      x.fillStyle = shadeHex(col, 0.7); x.fillRect(10, 22, 28, 12);
+      x.fillStyle = col; x.fillRect(12, 20, 24, 9);
+      x.fillStyle = "rgba(255,255,255,0.4)"; x.fillRect(15, 22, 18, 2);
+    }
+  }
+  const url = cv.toDataURL();
+  _iconCache.set(id, url);
+  return url;
+}
+
 function renderHotbar(): void {
   hotbarEl.innerHTML = "";
   for (let i = 0; i < 9; i++) {
     const slot = inv.slots[i];
     const d = document.createElement("div");
     d.className = "slot" + (i === inv.selected ? " active" : "");
+    const num = document.createElement("span");
+    num.className = "slotNum";
+    num.textContent = String(i + 1);
+    d.appendChild(num);
     if (slot) {
-      d.style.background = itemColor(slot.id) + "aa";
-      d.textContent = `${i + 1}\n${itemName(slot.id)}${slot.count > 1 ? " x" + slot.count : ""}`;
-    } else {
-      d.textContent = `${i + 1}\n空`;
+      d.style.backgroundImage = `url("${itemIcon(slot.id)}")`;
+      d.title = itemName(slot.id);
+      if (slot.count > 1) {
+        const c = document.createElement("span");
+        c.className = "cnt";
+        c.textContent = String(slot.count);
+        d.appendChild(c);
+      }
     }
     d.addEventListener("click", () => { inv.selected = i; renderHotbar(); });
     hotbarEl.appendChild(d);
@@ -179,7 +321,17 @@ function renderInventory(): void {
     d.className = "invSlot" + (i === inv.selected ? " active" : "") + (i < 9 ? " hot" : "");
     if (slot) {
       d.style.borderColor = itemColor(slot.id);
-      d.textContent = `${itemName(slot.id)}${slot.count > 1 ? " ×" + slot.count : ""}`;
+      d.style.backgroundImage = `url("${itemIcon(slot.id)}")`;
+      d.style.backgroundSize = "72%";
+      d.style.backgroundPosition = "center";
+      d.style.backgroundRepeat = "no-repeat";
+      d.title = itemName(slot.id);
+      if (slot.count > 1) {
+        const c = document.createElement("span");
+        c.className = "cnt";
+        c.textContent = "×" + slot.count;
+        d.appendChild(c);
+      }
     } else {
       d.textContent = i < 9 ? `${i + 1}` : "";
     }
@@ -265,6 +417,19 @@ function openConnect(): void {
   document.exitPointerLock(); overlay.style.display = "none";
 }
 function closeConnect(): void { connectOpen = false; connectWrap.style.display = "none"; lock(); }
+function openTutorial(): void {
+  tutorialOpen = true;
+  tutorialEl.style.display = "flex";
+  document.exitPointerLock();
+  overlay.style.display = "none";
+}
+function closeTutorial(): void {
+  tutorialOpen = false;
+  tutorialEl.style.display = "none";
+  if (tutDontShow.checked) localStorage.setItem("mc_tut", "1");
+  if (dead) overlay.style.display = "flex";
+  else if (!uiOpen()) lock();
+}
 
 // ---------- 输入 ----------
 const keys: Record<string, boolean> = {};
@@ -280,6 +445,7 @@ document.addEventListener("mousemove", (e: MouseEvent) => {
   player.pitch = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, player.pitch));
 });
 document.addEventListener("keydown", (e: KeyboardEvent) => {
+  if (tutorialOpen) { if (e.code === "Escape" || e.code === "KeyH") closeTutorial(); return; }
   if (chatOpen) { if (e.code === "Escape") closeChat(); return; }
   if (consoleOpen) { if (e.code === "Escape") closeConsole(); return; }
   if (connectOpen) { if (e.code === "Escape") closeConnect(); return; }
@@ -291,6 +457,8 @@ document.addEventListener("keydown", (e: KeyboardEvent) => {
   if (e.code === "F3") { e.preventDefault(); msg(`碰撞箱: ${toggleHitboxes() ? "开" : "关"}`); }
   if (e.code === "KeyE") { e.preventDefault(); openInventory(); }
   if (e.code === "KeyP") openPanel();
+  if (e.code === "KeyH") { e.preventDefault(); openTutorial(); return; }
+  if (e.code === "KeyV") { thirdPerson = !thirdPerson; msg(thirdPerson ? "第三人称视角" : "第一人称视角"); }
   if (e.code === "KeyT") { e.preventDefault(); openConsole(); }
   if (e.code === "KeyY") { e.preventDefault(); openChat(); }
   if (e.code.startsWith("Digit")) {
@@ -603,7 +771,52 @@ if (debugParams.has("debug")) {
     player.pitch = -0.12;
   }
   if (debugParams.has("inv")) openInventory();
+  if (debugParams.has("nofog")) { scene.fogStart = 2000; scene.fogEnd = 4000; }
+  if (debugParams.has("lake")) {
+    // 找一处"浅水靠岸"的位置（水面上方是空气、旁边是陆地），站到岸上看透明度
+    let bx = -1, bz = -1, by = 0;
+    for (let z = 3; z < SZ - 3 && bx < 0; z++)
+      for (let x = 8; x < SX - 8; x++) {
+        if (getBlock(x, SEA_LEVEL - 1, z) !== B.WATER) continue;
+        if (getBlock(x, SEA_LEVEL, z) !== B.AIR) continue;
+        if (getBlock(x + 2, SEA_LEVEL - 1, z) === B.WATER) continue;   // 要求近岸
+        if (getBlock(x, SEA_LEVEL - 3, z) !== B.WATER) continue;        // 要求浅水
+        bx = x; bz = z; by = SEA_LEVEL; break;
+      }
+    if (bx >= 0) {
+      // 站在岸上，朝水面俯视
+      player.pos.set(bx + 6.5, by + 3, bz + 0.5);
+      player.fly = true; player.yaw = -Math.PI / 2; player.pitch = 0.45;
+    }
+  }
+  // 截图辅助：?village 飞到第一座村庄上空；?at=x,y,z &look=yaw,pitch 精确定位
+  if (debugParams.has("village") && villageSites.length > 0) {
+    const v = villageSites[0];
+    player.pos.set(v.x + 0.5, v.base + 10, v.z + 22.5);
+    player.fly = true;
+    player.yaw = Math.PI; player.pitch = 0.42;
+  }
+  const atParam = debugParams.get("at");
+  if (atParam) {
+    const [ax, ay, az] = atParam.split(",").map(Number);
+    player.pos.set(ax, ay, az); player.fly = true;
+  }
+  const lookParam = debugParams.get("look");
+  if (lookParam) {
+    const [ly, lp] = lookParam.split(",").map(Number);
+    player.yaw = ly; player.pitch = lp;
+  }
+  if (villageSites.length > 0) console.log("villages:", JSON.stringify(villageSites));
+  const tipDbg = document.getElementById("tip");
+  if (tipDbg) tipDbg.textContent =
+    `pos ${player.pos.x.toFixed(0)},${player.pos.y.toFixed(0)},${player.pos.z.toFixed(0)} | ` +
+    `villages ${villageSites.map(v => `${v.x},${v.base},${v.z}`).join(" ")}`;
+  // 水面档位：?water=shader|flat|off
+  const waterParam = debugParams.get("water");
+  if (waterParam === "flat" || waterParam === "off" || waterParam === "shader") setWaterMode(waterParam);
 }
+// 自适应分辨率关闭开关（性能测试需要固定分辨率才能横向比较）
+let autoRes = !debugParams.has("noadapt");
 
 // ---------- 主循环 ----------
 let lastFps = 0;
@@ -617,10 +830,27 @@ let netT = 0;
 const _fwd = new BABYLON.Vector3();
 const _right = new BABYLON.Vector3();
 const _move = new BABYLON.Vector3();
+const _camBack = new BABYLON.Vector3();
+const _camDir = new BABYLON.Vector3();
+const THIRD_PERSON_DIST = 4.2;
+let sprinting = false;
+
+// 分轴移动（模块级函数：避免每帧创建闭包）
+function tryMoveAxis(axis: "x" | "y" | "z", delta: number): void {
+  const p = player;
+  if (delta === 0) return;
+  const old = p.pos[axis];
+  p.pos[axis] += delta;
+  if (boxCollides(p.pos.x, p.pos.y, p.pos.z, p.hw, p.height)) {
+    p.pos[axis] = old;
+    if (axis === "y") { if (delta < 0) p.onGround = true; p.vel.y = 0; }
+  } else if (axis === "y" && delta < 0) p.onGround = false;
+}
 
 scene.onBeforeRenderObservable.add(() => {
   const dt = Math.min(engine.getDeltaTime() / 1000, 0.05);
   const p = player;
+  sprinting = false;
 
   if (!dead) {
     _fwd.set(Math.sin(p.yaw), 0, Math.cos(p.yaw));
@@ -631,13 +861,15 @@ scene.onBeforeRenderObservable.add(() => {
     if (keys["KeyD"]) _move.addInPlace(_right);
     if (keys["KeyA"]) _move.subtractInPlace(_right);
     const sprint = (keys["ShiftLeft"] || keys["ShiftRight"]) && p.hunger > 6;
-    const speed = p.fly ? 14 : sprint ? 9 : 5.5;
+    sprinting = sprint && !p.fly;
+    // 疾跑大幅提速（步行 6 / 疾跑 15 / 飞行 22）
+    const speed = p.fly ? 22 : sprint ? 15 : 6;
     if (_move.lengthSquared() > 0) _move.normalize().scaleInPlace(speed);
 
     if (p.fly) {
       p.vel.copyFrom(_move);
-      if (keys["Space"]) p.vel.y = 10;
-      else if (sprint) p.vel.y = -10;
+      if (keys["Space"]) p.vel.y = 14;
+      else if (sprint) p.vel.y = -14;
       else p.vel.y = 0;
     } else {
       p.vel.x = _move.x; p.vel.z = _move.z;
@@ -645,18 +877,9 @@ scene.onBeforeRenderObservable.add(() => {
       if (p.onGround && keys["Space"]) { p.vel.y = JUMP_V; p.onGround = false; }
       if (p.vel.y < -40) p.vel.y = -40;
     }
-    const tryAxis = (axis: "x" | "y" | "z", delta: number): void => {
-      if (delta === 0) return;
-      const old = p.pos[axis];
-      p.pos[axis] += delta;
-      if (boxCollides(p.pos.x, p.pos.y, p.pos.z, p.hw, p.height)) {
-        p.pos[axis] = old;
-        if (axis === "y") { if (delta < 0) p.onGround = true; p.vel.y = 0; }
-      } else if (axis === "y" && delta < 0) p.onGround = false;
-    };
-    tryAxis("y", p.vel.y * dt);
-    tryAxis("x", p.vel.x * dt);
-    tryAxis("z", p.vel.z * dt);
+    tryMoveAxis("y", p.vel.y * dt);
+    tryMoveAxis("x", p.vel.x * dt);
+    tryMoveAxis("z", p.vel.z * dt);
     if (p.pos.y < -5) damagePlayer(99);
 
     // 饥饿
@@ -681,14 +904,35 @@ scene.onBeforeRenderObservable.add(() => {
     eatCd = Math.max(0, eatCd - dt);
   }
 
+  // 疾跑时轻微拉伸视野，速度感更强（帧率无关的指数趋近）
+  camera.fov += ((sprinting ? 1.24 : 1.1) - camera.fov) * Math.min(1, dt * 8);
   camera.position.set(p.pos.x, p.pos.y + p.eye, p.pos.z);
   camera.rotation.set(p.pitch, p.yaw, 0);
+
+  // 玩家模型始终跟随脚下位置；第三人称时显示并后拉相机
+  playerAvatar.position.set(p.pos.x, p.pos.y, p.pos.z);
+  playerAvatar.rotation.y = p.yaw;
+  playerAvatar.setEnabled(thirdPerson && !dead);
+  if (thirdPerson && !dead) {
+    // 相机后拉时若被方块挡住则拉近，避免穿墙/贴进地表
+    const cp = Math.cos(p.pitch), sp = Math.sin(p.pitch);
+    _camBack.set(-Math.sin(p.yaw) * cp, sp, -Math.cos(p.yaw) * cp);
+    let dist = THIRD_PERSON_DIST;
+    const camHit = raycastBlock(camera.position, _camBack, THIRD_PERSON_DIST);
+    if (camHit) dist = Math.max(1.6, camHit.dist - 0.3);
+    camera.position.set(
+      p.pos.x + _camBack.x * dist + Math.cos(p.yaw) * 0.55,
+      Math.max(p.pos.y + 0.4, p.pos.y + p.eye + _camBack.y * dist),
+      p.pos.z + _camBack.z * dist - Math.sin(p.yaw) * 0.55,
+    );
+  }
 
   // 挖掘
   if (mouseLeft && locked && !dead) {
     const camPos = camera.globalPosition;
-    const camDir = camera.getDirection(BABYLON.Axis.Z).normalize();
-    const hit = raycastBlock(camPos, camDir, REACH);
+    camera.getDirectionToRef(BABYLON.Axis.Z, _camDir);
+    _camDir.normalize();
+    const hit = raycastBlock(camPos, _camDir, REACH);
     if (hit) {
       const id = getBlock(hit.x, hit.y, hit.z);
       const def = DEFS[id];
@@ -750,20 +994,64 @@ scene.onBeforeRenderObservable.add(() => {
     lastFps = now;
     const fps = engine.getFps();
     fpsEl.textContent = `FPS: ${fps.toFixed(0)}`;
-    if (fps < 24 && hwScale < 1.5) {
+    // 动态分辨率：以 60fps 为目标，掉帧时降分辨率（最低 60%），有余量时再升回来
+    if (!autoRes) { /* 性能测试模式：分辨率固定，避免测量被自适应掩盖 */ }
+    else if (fps < 55) {
       lowFpsStreak++;
-      if (lowFpsStreak >= 3) {
+      if (lowFpsStreak >= 2 && hwScale < 1.7) {
         lowFpsStreak = 0;
-        hwScale += 0.25;
+        hwScale = Math.min(1.7, hwScale + 0.15);
         engine.setHardwareScalingLevel(hwScale);
-        msg(`性能模式: 分辨率降至 ${Math.round(100 / hwScale)}%`);
+        msg(`性能模式: 渲染分辨率 ${Math.round(100 / hwScale)}%`);
+      }
+    } else if (fps > 70) {
+      lowFpsStreak = 0;
+      if (hwScale > 1.001) {
+        hwScale = Math.max(1, hwScale - 0.1);
+        engine.setHardwareScalingLevel(hwScale);
       }
     } else lowFpsStreak = 0;
   }
 });
 
+// ---------- 自动化性能测试钩子（scripts/fps.mjs 使用，不参与游戏逻辑） ----------
+interface McDebugApi {
+  engine: BABYLON.Engine;
+  scene: BABYLON.Scene;
+  player: Player;
+  setWaterMode: (m: WaterMode) => void;
+  getWaterMode: () => WaterMode;
+  setAutoRes: (on: boolean) => void;
+  setHwScale: (v: number) => void;
+  getHwScale: () => number;
+  /** 世界编辑（基准脚本用来测"挖/放方块"的耗时与正确性） */
+  world: {
+    get: (x: number, y: number, z: number) => number;
+    break: (x: number, y: number, z: number) => boolean;
+    place: (x: number, y: number, z: number, id: number) => boolean;
+  };
+}
+declare global {
+  interface Window { __mc?: McDebugApi }
+}
+window.__mc = {
+  engine, scene, player,
+  setWaterMode, getWaterMode,
+  setAutoRes: (on: boolean) => { autoRes = on; },
+  setHwScale: (v: number) => { hwScale = v; engine.setHardwareScalingLevel(v); },
+  getHwScale: () => hwScale,
+  world: {
+    get: getBlock,
+    break: (x, y, z) => breakBlock(x, y, z) !== null,
+    place: (x, y, z, id) => placeBlock(x, y, z, id).ok,
+  },
+};
+
 engine.runRenderLoop(() => scene.render());
 window.addEventListener("resize", () => engine.resize());
+tutCloseBtn.addEventListener("click", () => closeTutorial());
+// 首次进入自动显示教程（调试/截图模式下不打扰）
+if (!localStorage.getItem("mc_tut") && !debugParams.has("debug")) openTutorial();
 refreshHUD();
 renderInventory();
-console.log("MiniCraft v2 ready. World:", SX, "x", SZ);
+console.log("OurCraft ready. World:", SX, "x", SZ);

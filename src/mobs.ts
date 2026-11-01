@@ -2,8 +2,9 @@
  * 规则：生物不能跳跃（寻路只允许平走与下落），伤害数值较低。
  */
 import * as BABYLON from "@babylonjs/core";
-import { SX, SZ } from "./config";
-import { boxCollides, surfaceY, isSolid } from "./world";
+import { SX, SZ, B } from "./config";
+import { boxCollides, surfaceY, isSolid, getBlock } from "./world";
+import { buildBoxGeometry6 } from "./geometry";
 
 export interface MobDrop { id: string; min: number; max: number; }
 export interface MobTypeDef {
@@ -86,40 +87,104 @@ interface TypeMaterials {
 }
 const materials = new Map<string, TypeMaterials>();
 
-function faceTexture(type: MobTypeDef): BABYLON.DynamicTexture {
-  const tex = new BABYLON.DynamicTexture("face_" + type.key, { width: 64, height: 64 }, scene, true);
+// 头部专用底色（让面部=/=身体颜色，更接近写实动物）
+function headColor(key: string, base: string): string {
+  switch (key) {
+    case "sheep": return "#e0dacd";
+    case "cow": return "#7a5a3f";
+    case "zombie": return "#6f9e5f";
+    case "spider": return "#262626";
+    case "chicken": return "#f0e8d0";
+    case "pig": return "#e8b0b4";
+    default: return base;
+  }
+}
+
+// 只画正脸的五官（眼睛/鼻子/嘴），其它面保持纯色
+function drawFace(c: CanvasRenderingContext2D, type: MobTypeDef, ox: number, oy: number, s: number): void {
+  const key = type.key;
+  const X = (u: number): number => ox + u * s;
+  const Y = (v: number): number => oy + v * s;
+  const hostile = type.hostile;
+  const eyeDark = hostile ? "#c0261c" : "#20201f";
+
+  if (key === "spider") {
+    c.fillStyle = "#1a1a1a";
+    c.beginPath(); c.ellipse(X(0.5), Y(0.44), s * 0.3, s * 0.26, 0, 0, Math.PI * 2); c.fill();
+    c.fillStyle = "#e03022";
+    for (const [u, v, r] of [[0.32, 0.38, 0.07], [0.5, 0.33, 0.06], [0.68, 0.38, 0.07], [0.5, 0.52, 0.05]] as Array<[number, number, number]>) {
+      c.beginPath(); c.arc(X(u), Y(v), s * r, 0, Math.PI * 2); c.fill();
+    }
+  } else {
+    for (const u of [0.33, 0.67]) {
+      c.fillStyle = "rgba(246,246,240,0.95)";
+      c.beginPath(); c.ellipse(X(u), Y(0.43), s * 0.1, s * 0.12, 0, 0, Math.PI * 2); c.fill();
+      c.fillStyle = eyeDark;
+      c.beginPath(); c.ellipse(X(u), Y(0.44), s * 0.055, s * 0.075, 0, 0, Math.PI * 2); c.fill();
+      c.fillStyle = "rgba(255,255,255,0.85)";
+      c.beginPath(); c.arc(X(u) - s * 0.02, Y(0.41), s * 0.018, 0, Math.PI * 2); c.fill();
+    }
+    c.strokeStyle = hostile ? "rgba(40,20,20,0.8)" : "rgba(40,35,30,0.5)";
+    c.lineWidth = Math.max(1, s * 0.03);
+    for (const u of [0.33, 0.67]) {
+      c.beginPath();
+      c.moveTo(X(u) - s * 0.11, Y(hostile ? 0.3 : 0.32));
+      c.lineTo(X(u) + s * 0.11, Y(hostile ? 0.37 : 0.33));
+      c.stroke();
+    }
+  }
+
+  if (key === "pig") {
+    c.fillStyle = "#d99098";
+    c.beginPath(); c.ellipse(X(0.5), Y(0.67), s * 0.16, s * 0.11, 0, 0, Math.PI * 2); c.fill();
+    c.fillStyle = "#8a4a52";
+    c.beginPath(); c.ellipse(X(0.44), Y(0.67), s * 0.03, s * 0.045, 0, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.ellipse(X(0.56), Y(0.67), s * 0.03, s * 0.045, 0, 0, Math.PI * 2); c.fill();
+  } else if (key === "cow") {
+    c.fillStyle = "#d8c8b0";
+    c.beginPath(); c.ellipse(X(0.5), Y(0.69), s * 0.18, s * 0.12, 0, 0, Math.PI * 2); c.fill();
+    c.fillStyle = "#6a4a36";
+    c.beginPath(); c.arc(X(0.43), Y(0.69), s * 0.028, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.arc(X(0.57), Y(0.69), s * 0.028, 0, Math.PI * 2); c.fill();
+  } else if (key === "chicken") {
+    c.fillStyle = "#e8a020";
+    c.beginPath();
+    c.moveTo(X(0.5), Y(0.56));
+    c.lineTo(X(0.42), Y(0.67));
+    c.lineTo(X(0.58), Y(0.67));
+    c.closePath(); c.fill();
+  } else if (key === "zombie") {
+    c.fillStyle = "#3a2a2a";
+    c.fillRect(X(0.36), Y(0.63), s * 0.28, s * 0.06);
+    c.fillStyle = "#d8d8d0";
+    for (let i = 0; i < 4; i++) c.fillRect(X(0.39 + i * 0.06), Y(0.63), s * 0.03, s * 0.035);
+  } else if (key === "sheep") {
+    c.strokeStyle = "rgba(50,45,40,0.6)";
+    c.lineWidth = Math.max(1, s * 0.03);
+    c.beginPath(); c.moveTo(X(0.44), Y(0.67)); c.lineTo(X(0.56), Y(0.67)); c.stroke();
+  }
+}
+
+// 4x2 头贴图网格：0=正面(五官) 1=后面 2=左 3=右 4=顶 5=底
+function faceAtlas(type: MobTypeDef): BABYLON.DynamicTexture {
+  const cell = 64, cols = 4, rows = 2;
+  const tex = new BABYLON.DynamicTexture("face_" + type.key, { width: cell * cols, height: cell * rows }, scene, true);
   tex.hasAlpha = false;
   const c = tex.getContext() as CanvasRenderingContext2D;
-  c.fillStyle = type.color;
-  c.fillRect(0, 0, 64, 64);
-  // 眼睛
-  c.fillStyle = type.hostile ? "#ff3020" : "#1a1a1a";
-  const eyeY = type.key === "spider" ? 22 : 26;
-  c.fillRect(14, eyeY, 10, 8);
-  c.fillRect(40, eyeY, 10, 8);
-  // 高光
-  c.fillStyle = "#ffffff";
-  c.fillRect(16, eyeY + 1, 3, 3);
-  c.fillRect(42, eyeY + 1, 3, 3);
-  // 嘴/鼻子
-  if (type.key === "pig") {
-    c.fillStyle = "#c47880";
-    c.fillRect(22, 42, 20, 12);
-    c.fillStyle = "#8a4a52";
-    c.fillRect(26, 46, 4, 5);
-    c.fillRect(34, 46, 4, 5);
-  } else if (type.key === "chicken") {
-    c.fillStyle = "#e8a020";
-    c.fillRect(26, 44, 12, 8);
-  } else if (type.key === "zombie") {
-    c.fillStyle = "#2a5a2a";
-    c.fillRect(20, 46, 24, 6);
-    c.fillStyle = "#cfcfcf";
-    for (let i = 0; i < 4; i++) c.fillRect(22 + i * 6, 46, 3, 4);
-  } else {
-    c.fillStyle = "rgba(0,0,0,0.32)";
-    c.fillRect(24, 46, 16, 4);
+  const headCol = headColor(type.key, type.color);
+  c.fillStyle = headCol;
+  c.fillRect(0, 0, cell * cols, cell * rows);
+  const shades: Array<[number, number]> = [[1, 0.88], [2, 0.93], [3, 0.93], [4, 1.06], [5, 0.82]];
+  for (const [ci, f] of shades) {
+    const cx = (ci % cols) * cell, cy = Math.floor(ci / cols) * cell;
+    c.fillStyle = shade(headCol, f);
+    c.fillRect(cx, cy, cell, cell);
+    for (let i = 0; i < 80; i++) {
+      c.fillStyle = shade(headCol, f * (0.9 + Math.random() * 0.22));
+      c.fillRect(cx + Math.random() * cell, cy + Math.random() * cell, 2 + Math.random() * 3, 2 + Math.random() * 3);
+    }
   }
+  drawFace(c, type, 0, 0, cell);
   tex.update();
   return tex;
 }
@@ -137,7 +202,7 @@ function buildMaterials(): void {
     const t = MOB_TYPES[key];
     const body = flatMat("mobBody_" + key, t.color);
     const head = flatMat("mobHead_" + key, "#ffffff");
-    head.diffuseTexture = faceTexture(t);
+    head.diffuseTexture = faceAtlas(t);
     head.diffuseColor = new BABYLON.Color3(1, 1, 1);
     const limbs = flatMat("mobLimbs_" + key, shade(t.color, 0.75));
     const accent = flatMat("mobAccent_" + key, accentColor(key), 0.15);
@@ -167,6 +232,22 @@ function box(parent: BABYLON.TransformNode, mat: BABYLON.Material, name: string,
   m.parent = parent;
   return m;
 }
+// 头部盒子：六面分别采样 4x2 头贴图，只有 +Z 正面带五官
+function headBox(parent: BABYLON.TransformNode, mat: BABYLON.Material, name: string,
+                 w: number, h: number, d: number, x: number, y: number, z: number): BABYLON.Mesh {
+  const m = new BABYLON.Mesh(name, scene);
+  const g = buildBoxGeometry6({ top: 4, bottom: 5, front: 0, back: 1, left: 2, right: 3 }, 4, 2);
+  const vd = new BABYLON.VertexData();
+  vd.positions = g.positions;
+  vd.normals = g.normals;
+  vd.uvs = g.uvs;
+  vd.indices = g.indices;
+  vd.applyToMesh(m);
+  m.material = mat;
+  m.position.set(x, y, z);
+  m.parent = parent;
+  return m;
+}
 function leg(parent: BABYLON.TransformNode, mat: BABYLON.Material,
             w: number, h: number, d: number, x: number, yTop: number, z: number): BABYLON.TransformNode {
   const pivot = new BABYLON.TransformNode("legPivot", scene);
@@ -180,7 +261,7 @@ function buildBody(root: BABYLON.TransformNode, t: MobTypeDef, mats: TypeMateria
   switch (t.key) {
     case "pig": {
       box(root, mats.body, "body", 0.72, 0.5, 1.0, 0, 0.55, 0);
-      box(root, mats.head, "head", 0.5, 0.46, 0.42, 0, 0.6, 0.55);
+      headBox(root, mats.head, "head", 0.5, 0.46, 0.42, 0, 0.6, 0.55);
       box(root, mats.accent, "snout", 0.22, 0.16, 0.1, 0, 0.54, 0.78);
       for (const [x, z] of [[-0.24, 0.32], [0.24, 0.32], [-0.24, -0.32], [0.24, -0.32]])
         legs.push(leg(root, mats.limbs, 0.18, 0.3, 0.18, x, 0.3, z));
@@ -188,14 +269,14 @@ function buildBody(root: BABYLON.TransformNode, t: MobTypeDef, mats: TypeMateria
     }
     case "sheep": {
       box(root, mats.body, "body", 0.78, 0.62, 1.0, 0, 0.72, 0);
-      box(root, mats.head, "head", 0.44, 0.44, 0.42, 0, 0.92, 0.52);
+      headBox(root, mats.head, "head", 0.44, 0.44, 0.42, 0, 0.92, 0.52);
       for (const [x, z] of [[-0.24, 0.32], [0.24, 0.32], [-0.24, -0.32], [0.24, -0.32]])
         legs.push(leg(root, mats.limbs, 0.17, 0.42, 0.17, x, 0.42, z));
       break;
     }
     case "chicken": {
       box(root, mats.body, "body", 0.36, 0.36, 0.46, 0, 0.4, 0);
-      box(root, mats.head, "head", 0.24, 0.24, 0.22, 0, 0.64, 0.2);
+      headBox(root, mats.head, "head", 0.24, 0.24, 0.22, 0, 0.64, 0.2);
       box(root, mats.accent, "beak", 0.1, 0.08, 0.12, 0, 0.62, 0.35);
       box(root, mats.accent, "wattle", 0.06, 0.08, 0.06, 0, 0.54, 0.33);
       box(root, mats.limbs, "wingL", 0.06, 0.18, 0.3, -0.2, 0.42, 0);
@@ -206,7 +287,7 @@ function buildBody(root: BABYLON.TransformNode, t: MobTypeDef, mats: TypeMateria
     }
     case "cow": {
       box(root, mats.body, "body", 0.92, 0.7, 1.24, 0, 0.82, 0);
-      box(root, mats.head, "head", 0.5, 0.46, 0.48, 0, 0.98, 0.72);
+      headBox(root, mats.head, "head", 0.5, 0.46, 0.48, 0, 0.98, 0.72);
       box(root, mats.accent, "hornL", 0.1, 0.1, 0.1, -0.2, 1.2, 0.72);
       box(root, mats.accent, "hornR", 0.1, 0.1, 0.1, 0.2, 1.2, 0.72);
       box(root, mats.accent, "udder", 0.24, 0.12, 0.24, 0, 0.42, -0.2);
@@ -216,7 +297,7 @@ function buildBody(root: BABYLON.TransformNode, t: MobTypeDef, mats: TypeMateria
     }
     case "zombie": {
       box(root, mats.body, "torso", 0.5, 0.72, 0.3, 0, 1.14, 0);
-      box(root, mats.head, "head", 0.46, 0.46, 0.46, 0, 1.74, 0);
+      headBox(root, mats.head, "head", 0.46, 0.46, 0.46, 0, 1.74, 0);
       box(root, mats.limbs, "armL", 0.14, 0.16, 0.62, -0.32, 1.36, 0.28);
       box(root, mats.limbs, "armR", 0.14, 0.16, 0.62, 0.32, 1.36, 0.28);
       legs.push(leg(root, mats.limbs, 0.18, 0.78, 0.18, -0.13, 0.78, 0));
@@ -225,9 +306,7 @@ function buildBody(root: BABYLON.TransformNode, t: MobTypeDef, mats: TypeMateria
     }
     case "spider": {
       box(root, mats.body, "abdomen", 0.72, 0.5, 0.78, 0, 0.5, -0.18);
-      box(root, mats.head, "head", 0.44, 0.36, 0.4, 0, 0.44, 0.48);
-      box(root, mats.accent, "eyeL", 0.08, 0.08, 0.04, -0.1, 0.54, 0.68);
-      box(root, mats.accent, "eyeR", 0.08, 0.08, 0.04, 0.1, 0.54, 0.68);
+      headBox(root, mats.head, "head", 0.44, 0.36, 0.4, 0, 0.44, 0.48);
       for (let i = 0; i < 4; i++) {
         const z = 0.28 - i * 0.2;
         legs.push(leg(root, mats.limbs, 0.06, 0.34, 0.06, -0.36, 0.46, z));
@@ -266,7 +345,10 @@ export function initMobs(sc: BABYLON.Scene): void {
 export function spawnMob(typeKey: string, x: number, z: number): Mob | null {
   const t = MOB_TYPES[typeKey];
   if (!t) return null;
-  const y = surfaceY(Math.floor(x), Math.floor(z));
+  const bx = Math.floor(x), bz = Math.floor(z);
+  const y = surfaceY(bx, bz);
+  if (getBlock(bx, y, bz) === B.WATER) return null;   // 水下不刷生物（否则会沉在海底）
+
   const root = new BABYLON.TransformNode("mobRoot", scene);
   const mats = materials.get(typeKey)!;
   const legs = buildBody(root, t, mats);
@@ -314,25 +396,30 @@ export function pickMobRay(origin: BABYLON.Vector3, dir: BABYLON.Vector3, maxDis
   let best: { mob: Mob; t: number } | null = null;
   for (const m of mobs) {
     const hw = m.type.w / 2;
-    const min = new BABYLON.Vector3(m.pos.x - hw, m.pos.y, m.pos.z - hw);
-    const max = new BABYLON.Vector3(m.pos.x + hw, m.pos.y + m.type.h, m.pos.z + hw);
-    const t = rayAABB(origin, dir, min, max);
+    // 标量版 AABB：避免每帧为每只生物分配 Vector3
+    const t = rayAABB(origin, dir,
+      m.pos.x - hw, m.pos.y, m.pos.z - hw,
+      m.pos.x + hw, m.pos.y + m.type.h, m.pos.z + hw);
     if (t !== null && t <= maxDist && (!best || t < best.t)) best = { mob: m, t };
   }
   return best;
 }
 function rayAABB(o: BABYLON.Vector3, d: BABYLON.Vector3,
-                 min: BABYLON.Vector3, max: BABYLON.Vector3): number | null {
+                 minx: number, miny: number, minz: number,
+                 maxx: number, maxy: number, maxz: number): number | null {
   let tmin = 0, tmax = Infinity;
-  const oo = [o.x, o.y, o.z], dd = [d.x, d.y, d.z];
-  const mi = [min.x, min.y, min.z], ma = [max.x, max.y, max.z];
   for (let i = 0; i < 3; i++) {
-    if (Math.abs(dd[i]) < 1e-8) {
-      if (oo[i] < mi[i] || oo[i] > ma[i]) return null;
+    const oo = i === 0 ? o.x : i === 1 ? o.y : o.z;
+    const dd = i === 0 ? d.x : i === 1 ? d.y : d.z;
+    const mi = i === 0 ? minx : i === 1 ? miny : minz;
+    const ma = i === 0 ? maxx : i === 1 ? maxy : maxz;
+    if (Math.abs(dd) < 1e-8) {
+      if (oo < mi || oo > ma) return null;
     } else {
-      let t1 = (mi[i] - oo[i]) / dd[i], t2 = (ma[i] - oo[i]) / dd[i];
+      let t1 = (mi - oo) / dd, t2 = (ma - oo) / dd;
       if (t1 > t2) { const tmp = t1; t1 = t2; t2 = tmp; }
-      tmin = Math.max(tmin, t1); tmax = Math.min(tmax, t2);
+      if (t1 > tmin) tmin = t1;
+      if (t2 < tmax) tmax = t2;
       if (tmin > tmax) return null;
     }
   }

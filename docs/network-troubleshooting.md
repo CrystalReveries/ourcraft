@@ -23,12 +23,12 @@ node --input-type=module -e "import('ws').then(({WebSocket})=>{const w=new WebSo
 ## 修复 1：放行 Windows 防火墙入站端口（最常见）
 以**管理员身份**打开 PowerShell（Win+X → 终端(管理员)）：
 ```powershell
-New-NetFirewallRule -DisplayName "MiniCraft Web 5173" -Direction Inbound -Protocol TCP -LocalPort 5173 -Action Allow -Profile Any
-New-NetFirewallRule -DisplayName "MiniCraft LAN 8787" -Direction Inbound -Protocol TCP -LocalPort 8787 -Action Allow -Profile Any
+New-NetFirewallRule -DisplayName "OurCraft Web 5173" -Direction Inbound -Protocol TCP -LocalPort 5173 -Action Allow -Profile Any
+New-NetFirewallRule -DisplayName "OurCraft LAN 8787" -Direction Inbound -Protocol TCP -LocalPort 8787 -Action Allow -Profile Any
 ```
 验证：
 ```powershell
-Get-NetFirewallRule -DisplayName "MiniCraft*" | Format-Table DisplayName,Enabled,Direction,Action
+Get-NetFirewallRule -DisplayName "OurCraft*" | Format-Table DisplayName,Enabled,Direction,Action
 ```
 
 ## 修复 2：Hyper-V 防火墙（WSL mirrored 模式特有）
@@ -41,7 +41,7 @@ Get-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}'
 Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow
 
 # 方案 B（更精细）：只为这两个端口放行
-New-NetFirewallHyperVRule -Name "MiniCraft-LAN" -DisplayName "MiniCraft LAN" `
+New-NetFirewallHyperVRule -Name "OurCraft-LAN" -DisplayName "OurCraft LAN" `
   -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' `
   -Protocol TCP -LocalPorts 5173,8787
 ```

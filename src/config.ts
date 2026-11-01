@@ -1,7 +1,8 @@
 /* 全局配置：世界尺寸、方块定义、工具/材料/食物、物理常量 */
 
-export const SX = 128, SY = 64, SZ = 128;   // 世界尺寸（1M 体素）
-export const BUILD_LIMIT = 52;               // 建筑高度上限
+export const SX = 192, SY = 64, SZ = 192;   // 世界尺寸（更开阔，约 2.3M 体素）
+export const BUILD_LIMIT = 60;               // 建筑高度上限
+export const SEA_LEVEL = 12;                 // 海平面（低于此高度的低洼处灌水）
 export const REACH = 7;                      // 交互距离
 export const ATTACK_REACH = 4;               // 攻击距离
 export const GRAVITY = 26;
@@ -13,6 +14,7 @@ export const B = {
   SNOW: 13, BOOKSHELF: 14, DUST: 15, TORCH: 16, LEVER: 17, LAMP: 18,
   EMERALD_ORE: 19, DIAMOND_ORE: 20, COAL_ORE: 21, IRON_ORE: 22, GOLD_ORE: 23,
   GRAVEL: 24, CLAY: 25, SANDSTONE: 26, CACTUS: 27, MOSSY_COBBLE: 28,
+  WATER: 29, TALL_GRASS: 30, FLOWER: 31,
 } as const;
 
 export type Special = "dust" | "torch" | "lever" | "lamp";
@@ -32,6 +34,7 @@ export interface BlockDef {
   drop?: string;             // 掉落物 id（默认方块自身）
   alpha?: number;
   special?: Special;
+  cross?: boolean;           // 十字交叉植物（不渲染为立方体）
 }
 
 // 图集 tile（8列 x 4行）
@@ -40,6 +43,7 @@ export const T = {
   planks: 8, cobble: 9, bricks: 10, glass: 11, glow: 12, bedrock: 13, snow: 14, shelf: 15,
   dustOff: 16, dustOn: 17, lampOff: 18, lampOn: 19, emerald: 20, diamond: 21,
   coal: 22, iron: 23, gold: 24, gravel: 25, clay: 26, sandstone: 27, cactus: 28, mossy: 29,
+  water: 30,
 } as const;
 
 export const ATLAS_COLS = 8;
@@ -55,12 +59,12 @@ function def(id: number, name: string, color: string, tiles: [number, number, nu
 
 export const DEFS: BlockDef[] = [];
 DEFS[B.AIR] = def(B.AIR, "空气", "#000000", [0, 0, 0], 0, { solid: false, opaque: false, breakable: false });
-DEFS[B.GRASS] = def(B.GRASS, "草方块", "#4f9e3a", [T.grassTop, T.grassSide, T.dirt], 0.6, { tool: "shovel" });
+DEFS[B.GRASS] = def(B.GRASS, "草方块", "#6f9b57", [T.grassTop, T.grassSide, T.dirt], 0.6, { tool: "shovel" });
 DEFS[B.DIRT] = def(B.DIRT, "泥土", "#7a5a38", [T.dirt, T.dirt, T.dirt], 0.5, { tool: "shovel" });
 DEFS[B.STONE] = def(B.STONE, "石头", "#8a8a8a", [T.stone, T.stone, T.stone], 2.0, { tool: "pick" });
 DEFS[B.SAND] = def(B.SAND, "沙子", "#dbcf9a", [T.sand, T.sand, T.sand], 0.5, { tool: "shovel" });
 DEFS[B.LOG] = def(B.LOG, "原木", "#6e5230", [T.logTop, T.logSide, T.logTop], 1.2, { tool: "axe" });
-DEFS[B.LEAVES] = def(B.LEAVES, "树叶", "#2e6b23", [T.leaves, T.leaves, T.leaves], 0.2);
+DEFS[B.LEAVES] = def(B.LEAVES, "树叶", "#3f6b33", [T.leaves, T.leaves, T.leaves], 0.2);
 DEFS[B.PLANKS] = def(B.PLANKS, "木板", "#a3814f", [T.planks, T.planks, T.planks], 1.2, { tool: "axe" });
 DEFS[B.COBBLE] = def(B.COBBLE, "圆石", "#6f6f6f", [T.cobble, T.cobble, T.cobble], 2.0, { tool: "pick" });
 DEFS[B.BRICKS] = def(B.BRICKS, "砖块", "#9c5040", [T.bricks, T.bricks, T.bricks], 2.0, { tool: "pick" });
@@ -83,6 +87,14 @@ DEFS[B.CLAY] = def(B.CLAY, "黏土", "#a5b0c0", [T.clay, T.clay, T.clay], 0.8, {
 DEFS[B.SANDSTONE] = def(B.SANDSTONE, "砂岩", "#d8c48c", [T.sandstone, T.sandstone, T.sandstone], 1.6, { tool: "pick" });
 DEFS[B.CACTUS] = def(B.CACTUS, "仙人掌", "#3f8a3f", [T.cactus, T.cactus, T.cactus], 0.8, { tool: "axe" });
 DEFS[B.MOSSY_COBBLE] = def(B.MOSSY_COBBLE, "苔石", "#6b7f5f", [T.mossy, T.mossy, T.mossy], 2.0, { tool: "pick" });
+// 水：可穿越、不可破坏；非不透明，让水下方块的顶面能被绘制，水体本身由独立半透明水面网格渲染
+DEFS[B.WATER] = def(B.WATER, "水", "#3f6da8", [T.water, T.water, T.water], 0.5,
+  { solid: false, breakable: false, opaque: false });
+// 十字植物：不渲染成方块
+DEFS[B.TALL_GRASS] = def(B.TALL_GRASS, "高草", "#6f9b57", [0, 0, 0], 0.05,
+  { solid: false, opaque: false, cross: true, tool: "shovel" });
+DEFS[B.FLOWER] = def(B.FLOWER, "野花", "#d86a8a", [0, 0, 0], 0.05,
+  { solid: false, opaque: false, cross: true });
 
 // ---------- 工具 ----------
 export const TOOL_TIERS = ["wood", "stone", "iron", "gold", "diamond"] as const;

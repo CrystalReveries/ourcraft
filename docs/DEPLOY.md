@@ -21,8 +21,7 @@
 1. 进入仓库 **Settings → Pages**。
 2. **Source（构建与部署）** 应显示为 **GitHub Actions**（首次 Action 成功运行后会自动识别）。
    若仍是 "Deploy from a branch"，改成 **GitHub Actions** 即可。
-3. 部署完成后，站点地址为 `https://<user-or-org>.github.io/<repo>/`。
-   （若 `github-cr` 是 GitHub Enterprise，地址与设置入口可能略有不同。）
+3. 部署完成后，站点地址为 `https://crystalreveries.github.io/ourcraft/`。
 
 ### 验证
 

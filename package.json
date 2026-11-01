@@ -1,5 +1,5 @@
 {
-  "name": "babylon-minicraft",
+  "name": "babylonjs-ourcraft",
   "private": true,
   "version": "1.0.0",
   "type": "module",
@@ -8,7 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview --host",
     "test": "tsx tests/geometry.test.ts",
-    "server": "tsx server/index.ts"
+    "server": "tsx server/index.ts",
+    "fps": "node scripts/fps.mjs"
   },
   "dependencies": {
     "@babylonjs/core": "^9.30.0",
@@ -17,6 +18,7 @@
   },
   "devDependencies": {
     "@types/ws": "^8.5.12",
+    "playwright": "^1.64.1",
     "tsx": "^4.23.15",
     "typescript": "^5.6.0",
     "vite": "^6.0.0"

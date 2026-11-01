@@ -3,7 +3,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildBoxGeometry, tileUV, faceDefs, ATLAS_COLS, ATLAS_ROWS } from "../src/geometry";
+import {
+  buildBoxGeometry, buildPlantQuadGeometry, tileUV, tileUVIn, faceDefs, appendBoxFace,
+  ATLAS_COLS, ATLAS_ROWS, GeoBuffers,
+} from "../src/geometry";
 
 const EPS = 1e-6;
 type V3 = [number, number, number];
@@ -69,6 +72,53 @@ test("顶面/侧面/底面采样到不同的 tile 区域", () => {
   assert.ok(inside(uvCenter(0), 0), "顶面 UV 未落在草顶 tile");
   assert.ok(inside(uvCenter(1), 2), "底面 UV 未落在泥土 tile");
   assert.ok(inside(uvCenter(2), 1), "侧面 UV 未落在草侧 tile");
+});
+
+test("十字植物 UV 朝上: 底部顶点取较小 v, 顶部取较大 v（否则贴图上下颠倒）", () => {
+  const cols = 4, rows = 4;
+  const g = buildPlantQuadGeometry(6, cols, rows);
+  const r = tileUVIn(6, cols, rows);
+  for (let i = 0; i < g.positions.length; i += 3) {
+    const y = g.positions[i + 1];
+    const v = g.uvs[(i / 3) * 2 + 1];
+    if (Math.abs(y) < EPS) assert.ok(Math.abs(v - r.v0) < EPS, `底部顶点 v=${v} 应为 ${r.v0}`);
+    else assert.ok(Math.abs(v - r.v1) < EPS, `顶部顶点 v=${v} 应为 ${r.v1}`);
+  }
+  // 四边形覆盖 1x1 的竖直面，且 UV 落在本 tile 内
+  const xs = g.positions.filter((_, i) => i % 3 === 0);
+  assert.ok(Math.abs(Math.max(...xs) - Math.min(...xs) - 1) < EPS);
+  assert.ok(g.uvs.every(u => u >= 0 && u <= 1));
+});
+
+test("appendBoxFace 与 buildBoxGeometry 等价（仅按方块坐标平移）", () => {
+  const tiles = { top: 0, side: 1, bottom: 2 };
+  const box = buildBoxGeometry(tiles);
+  const buf: GeoBuffers = { positions: [], normals: [], uvs: [], indices: [] };
+  const ox = 3, oy = 5, oz = -2;
+  for (const f of faceDefs(tiles)) appendBoxFace(buf, f, ox, oy, oz);
+
+  assert.deepEqual(buf.uvs, box.uvs, "UV 应与单方块几何完全一致");
+  assert.deepEqual(buf.normals, box.normals, "法线应与单方块几何完全一致");
+  assert.deepEqual(buf.indices, box.indices, "索引应与单方块几何完全一致");
+  assert.equal(buf.positions.length, box.positions.length);
+  for (let i = 0; i < buf.positions.length; i += 3) {
+    assert.ok(Math.abs(buf.positions[i] - (box.positions[i] + ox + 0.5)) < EPS);
+    assert.ok(Math.abs(buf.positions[i + 1] - (box.positions[i + 1] + oy + 0.5)) < EPS);
+    assert.ok(Math.abs(buf.positions[i + 2] - (box.positions[i + 2] + oz + 0.5)) < EPS);
+  }
+});
+
+test("appendBoxFace 合并多面后绕序仍满足 cross·normal < 0", () => {
+  const tiles = { top: 0, side: 1, bottom: 2 };
+  const buf: GeoBuffers = { positions: [], normals: [], uvs: [], indices: [] };
+  appendBoxFace(buf, faceDefs(tiles)[0], 0, 0, 0);
+  appendBoxFace(buf, faceDefs(tiles)[2], 4, 1, 7);
+  for (let t = 0; t < buf.indices.length; t += 3) {
+    assert.ok(triCrossDotNormal(buf, t) < -EPS, `三角形 ${t / 3} 绕序错误`);
+  }
+  // 第二个面被搬到 (4,1,7) 附近
+  const far = buf.positions.filter((_, i) => i % 3 === 0).some(v => v > 3.9);
+  assert.ok(far, "合并后的面应出现在第二处方块坐标");
 });
 
 test("图集 UV 不越界且 tile 网格正确", () => {

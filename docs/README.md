@@ -1,4 +1,4 @@
-# Babylon MiniCraft 开发文档
+# OurCraft（`babylonjs-ourcraft`）开发文档
 
 长期目标：基于 Babylon.js 的 Minecraft 风格**局域网多人（<10 人）**体素沙盒游戏。
 当前状态：**单人可玩版本（v1）已完成**，具备完整世界生成、建造/挖掘、红石、生物、昼夜天气、经济与管理系统。

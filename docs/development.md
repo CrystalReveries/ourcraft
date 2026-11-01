@@ -32,10 +32,12 @@ npm run preview        # 预览构建产物
 ## 新增方块 checklist
 1. `src/config.ts`：`B` 加 ID → `T` 加图集 tile（8 列，行 = floor(tile/8)）→ `DEFS[id]` 填全字段
 2. `src/world.ts` 的 `makeAtlas()`：绘制该 tile（透明块不要画满，或准备独立纹理）
-3. `generateWorld()` 的 `masters.set(...)` 列表加入新 ID（否则实例无法创建）
+3. **普通方块无需注册**：`chunkMeshes` 的 `opaque`/`glass`/`plant` 通道会自动包含它
+   （判定见 `world.ts` 的 `CHUNK_BLOCK_T` 查表）；只有 `special`（红石元件）或需要独立材质（如萤石自发光）
+   才在 `generateWorld()` 的 `masters.set(...)` 里加一行，走实例路径
 4. 需要可放置：加入 `HOTBAR`
 5. 特殊行为（红石/发光/不透明）：在 `DEFS` 标记 `special` / `opaque` / `solid`，必要时在 `masterFor` 增加变体
-6. 跑 `npm test` + 截图验证
+6. 跑 `npm test` + `npm run fps -- --diag`（确认 Mesh 数没暴涨）+ 截图验证
 
 ## 新增生物 checklist
 1. `src/mobs.ts` 的 `MOB_TYPES` 加条目（尺寸/血量/速度/伤害/掉落/敌对）
@@ -49,8 +51,10 @@ npm run preview        # 预览构建产物
 ## 代码约定
 - `strict: true` + `noUnusedLocals`；避免 `any`
 - 热循环（每帧）禁止分配对象：复用模块级临时 `Vector3/Color3`
-- 方块实例创建后必须 `freezeWorldMatrix()`
-- 世界变更统一走 `placeBlock/breakBlock`（内部处理实例、红石、边界、上限）
+- **静态方块禁止逐方块建 Mesh/实例**：走区块合并网格（`buildChunk`），
+  实例只留给会变外观/会动的对象。Mesh 总数是硬预算，见 `AGENTS.md` §5
+- 静态网格创建后必须 `freezeWorldMatrix()`；材质共享并 `freeze()`
+- 世界变更统一走 `placeBlock/breakBlock`（内部处理区块重建、红石、边界、上限）
 - 手写几何必须满足绕序约定并有 UT 覆盖
 - 模块边界：`geometry.ts`/`config.ts` 保持无 Babylon 场景依赖（未来服务器复用）
 

@@ -42,6 +42,30 @@
 
 **经验**：先测量再优化；实例化场景中"冻结矩阵"和"避免整图扫描"通常是最大收益。
 
+## 3b. 性能：真正的元凶是"每个方块一个 Mesh"（12 fps → 186 fps）
+**现象**：192×64×192 世界里 12 fps，分辨率降到 1/4 也不变，看起来"什么都不管用"。
+
+**误判过程**：
+1. 先怀疑水面波动 shader → A/B 测下来 flat/off 只差 ±1.5%（噪声）⇒ 不是它。
+2. 怀疑 draw call → patch `gl.drawElements*` 计数，每帧只有 43 个 ⇒ 不是 draw call。
+3. 看 `engine._drawCalls` 显示 4700+ —— **这个计数器不等于真实 GL draw call**，误导了一轮。
+
+**真因**：可见方块 99,789 个 → 场景里 99,910 个 Mesh。Babylon 每帧
+`_evaluateActiveMeshes()` 要遍历 `scene.meshes` 里的**每一个**对象（LOD map 查找、
+`isReady`、`computeWorldMatrix`、视锥剔除），实测 **78.6 ms/帧**。
+Instancing 只省了 draw call，**没省**每帧的 JS 对象遍历。
+
+**修复**：16×16×SY 区块合并网格（普通方块/玻璃/植物 3 个通道共享材质），
+Mesh 数 99,910 → ~380，`_evaluateActiveMeshes` → 2.7 ms，帧率 ×16。
+
+**经验**：
+- 判断"CPU 还是 GPU 瓶颈"最可靠的方法：包住 `scene.render()` 计时并和帧间隔比较
+  （`cpuMs ≈ frameMs` ⇒ 主线程瓶颈），再包住 `_evaluateActiveMeshes()` 定位。
+- 体素游戏里 **Mesh 数量是硬预算**，不是三角形数量。合并几何永远优于逐块实例。
+- 顺手修掉一个浪费：`faceVisible` 把"世界外"当空气，导致 y=0 整层 36,864 块基岩
+  都建了实例/几何（永远看不到）。
+- 量测脚本要固变量（`?noadapt` + 固定 `hwScale`），否则自适应分辨率会把问题藏起来。
+
 ## 4. Babylon 视角方向约定
 Babylon 左手系：`rotation.y` 增大 → 向右转；`rotation.x` 增大 → 向下看。
 因此标准 FPS 控制是：
@@ -85,3 +109,26 @@ google-chrome --headless=new --no-sandbox --enable-unsafe-swiftshader \
 - 数学/几何不变量（绕序、UV 范围、包围盒、面数量）
 - 纯逻辑（噪声范围、红石传导、A* 可达性）
 - 不要测渲染结果（用截图代替）
+## 10. 十字植物贴图上下颠倒
+**现象**：高草/花朵渲染出来根朝天、花冠埋进土里。
+
+**根因**：方块几何约定"底部顶点取较小 v（`tileUVIn` 的 `v0`）"，
+而早期植物四边形写成了底部取 `v=1`。图集与植物用的是同一套 UV 约定，
+所以只改植物的 v 映射即可。
+
+**修复**：`geometry.buildPlantQuadGeometry()` 统一生成植物面，
+并有 UT 断言"最低顶点 v 更小"。新增植物/贴图时复用它，别手写 UV。
+
+## 11. 半透明水不要用"逐方块实例"
+水体如果用半透明方块实例渲染：① 每块都是 6 个面，海面就是几千个透明立方体，
+填充率爆掉；② 实例之间没有深度排序，重叠处颜色错乱。
+
+**做法**：水面单独一张网格（只铺"上方暴露于空气"的顶面），配一个 `ShaderMaterial`
+（波动 + 菲涅尔 + 高光），`DEFS[B.WATER].opaque = false` 让水下方块顶面照常绘制。
+水体在生成期一次性构建，水滴/水渠改完方块后无需重建（水不会流动）。
+
+## 12. 朝下的面会全黑
+`HemisphericLight` 默认 `groundColor = 黑`，朝下的面（树冠底、屋檐、洞穴顶）
+既没有太阳光也没有半球光 → 纯黑。
+
+**修复**：`hemi.groundColor = new Color3(0.42, 0.45, 0.5)` 给底面一点环境光。

@@ -48,14 +48,14 @@ wss.on("error", (err: NodeJS.ErrnoException) => {
 });
 
 wss.on("listening", () => {
-  console.log(`MiniCraft LAN server listening on port ${PORT} (max ${MAX_PLAYERS} players)`);
+  console.log(`OurCraft LAN server listening on port ${PORT} (max ${MAX_PLAYERS} players)`);
   for (const a of lanAddresses()) {
     console.log(`  游戏页面:  http://${a}:5173`);
     console.log(`  联机地址:  ws://${a}:${PORT}`);
   }
   console.log(`提示: 其它设备连不上通常是 Windows 防火墙拦截入站，管理员 PowerShell 执行：
-  New-NetFirewallRule -DisplayName "MiniCraft 5173" -Direction Inbound -Protocol TCP -LocalPort 5173 -Action Allow -Profile Any
-  New-NetFirewallRule -DisplayName "MiniCraft 8787" -Direction Inbound -Protocol TCP -LocalPort 8787 -Action Allow -Profile Any
+  New-NetFirewallRule -DisplayName "OurCraft 5173" -Direction Inbound -Protocol TCP -LocalPort 5173 -Action Allow -Profile Any
+  New-NetFirewallRule -DisplayName "OurCraft 8787" -Direction Inbound -Protocol TCP -LocalPort 8787 -Action Allow -Profile Any
 详见 docs/network-troubleshooting.md`);
 });
 
